@@ -128,6 +128,7 @@ function createLobby(){
   peer=new Peer(roomID);
   myID=roomID;
   peer.on("open",id=>{
+    console.log("Peer open:", id);
     players[myID]={id:myID,name:myName};
     turnOrder=[myID];
     document.getElementById("roomDisplay").innerText="Room Link: "+location.origin+location.pathname+"?room="+id;
@@ -144,6 +145,7 @@ function joinLobby(){
   const room=new URLSearchParams(location.search).get("room");
   peer=new Peer();
   peer.on("open",id=>{
+    console.log("Peer open:", id);
     myID=id;
     const conn=peer.connect(room);
     setupConnection(conn,true);
@@ -213,6 +215,7 @@ function nextTurn(){
   pendingAction=null;
   actionWaitingReject=false;
   updatePlayerList();
+  renderActionButtons();
 }
 
 function renderActionButtons(){
@@ -237,7 +240,6 @@ function selectAction(actionKey){
     broadcast("action",{...pendingAction});
     handleIncomingAction(pendingAction);
     nextTurn();
-    renderActionButtons();
   }
 }
 
@@ -266,7 +268,7 @@ function submitPhoto(){
   displayPhoto(image,myName,true);
   broadcast("photo",{image,name:myName});
   stream.getTracks().forEach(t=>t.stop());
-  document.getElementById("cameraUI").style.display="none");
+  document.getElementById("cameraUI").style.display="none";
   actionWaitingReject=true;
 }
 
@@ -296,7 +298,6 @@ function handleReject(data){
   actionWaitingReject=false;
   systemMessage(players[data.playerID].name+" rejected the action!");
   nextTurn();
-  renderActionButtons();
 }
 
 /************ Init Join ************/
