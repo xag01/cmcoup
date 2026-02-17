@@ -2,53 +2,67 @@
 <html>
 <head>
 <meta charset="UTF-8">
-<title>Host Hub Lobby</title>
+<title>P2P Lobby</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
 
 <style>
 body {
-  background: #111;
-  color: white;
-  text-align: center;
-  font-family: Arial;
-  padding: 20px;
+  background:#111;
+  color:white;
+  font-family:Arial;
+  text-align:center;
+  padding:20px;
 }
 button {
-  padding: 10px 20px;
-  margin: 10px;
-  font-size: 16px;
-  border-radius: 6px;
-  border: none;
-  cursor: pointer;
+  padding:10px 20px;
+  margin:8px;
+  font-size:15px;
+  border-radius:6px;
+  border:none;
+  cursor:pointer;
+}
+input {
+  padding:8px;
+  font-size:15px;
+  border-radius:6px;
+  border:none;
 }
 video, canvas, img {
-  max-width: 90%;
-  margin-top: 15px;
-  border-radius: 10px;
+  max-width:90%;
+  border-radius:10px;
+  margin-top:15px;
 }
-#cameraUI { display: none; }
-#roomLink { word-break: break-all; }
+#cameraUI { display:none; }
+#gameUI { display:none; }
+#players { margin-top:15px; }
+.system { color:#aaa; font-size:14px; }
+.hostBadge { color:#4CAF50; font-size:12px; }
 </style>
 </head>
 <body>
 
-<h1>WebRTC Lobby</h1>
+<h1>P2P Photo Lobby</h1>
 
 <div id="startUI">
-  <button onclick="createLobby()">Create Lobby (Host)</button>
+  <input id="nicknameInput" placeholder="Enter nickname" />
+  <br>
+  <button onclick="createLobby()">Create Lobby</button>
 </div>
 
-<div id="hostUI" style="display:none;">
-  <h3>Share This Link:</h3>
-  <p id="roomLink"></p>
+<div id="joinUI" style="display:none;">
+  <input id="nicknameJoin" placeholder="Enter nickname" />
+  <br>
+  <button onclick="joinLobby()">Join Lobby</button>
 </div>
 
-<div id="playerUI" style="display:none;">
-  <h3>Connected to Host</h3>
+<div id="gameUI">
+  <h3 id="roomDisplay"></h3>
+  <div id="players"></div>
+  <button onclick="openCamera()">Take Action</button>
+  <h2>Feed</h2>
+  <div id="feed"></div>
 </div>
-
-<button id="takeBtn" onclick="openCamera()" style="display:none;">Take Action</button>
 
 <div id="cameraUI">
   <video id="video" autoplay playsinline></video><br>
@@ -57,116 +71,176 @@ video, canvas, img {
   <canvas id="canvas" style="display:none;"></canvas>
 </div>
 
-<h2>Lobby Feed</h2>
-<div id="feed"></div>
-
 <script>
 let peer;
-let connections = [];
+let myID;
+let myName;
 let isHost = false;
-let hostConnection = null;
+let hostID = null;
+let connections = {};
+let players = {};
 let stream;
 
-function randomID() {
+function randomID(){
   return Math.random().toString(36).substring(2,8).toUpperCase();
 }
 
-function createLobby() {
-  isHost = true;
+function systemMessage(msg){
+  const div = document.createElement("div");
+  div.className="system";
+  div.innerText=msg;
+  document.getElementById("feed").prepend(div);
+}
+
+function updatePlayerList(){
+  const div = document.getElementById("players");
+  div.innerHTML="<h4>Players:</h4>";
+  Object.values(players).forEach(p=>{
+    const el=document.createElement("div");
+    el.innerHTML = p.name + (p.id===hostID ? " <span class='hostBadge'>(Host)</span>" : "");
+    div.appendChild(el);
+  });
+}
+
+function broadcast(type,data){
+  Object.values(connections).forEach(conn=>{
+    conn.send({type,...data});
+  });
+}
+
+function createLobby(){
+  myName = document.getElementById("nicknameInput").value || "Host";
   const roomID = randomID();
+  isHost=true;
+  hostID=roomID;
+
   peer = new Peer(roomID);
+  myID=roomID;
 
-  peer.on('open', id => {
-    const link = location.origin + location.pathname + "?room=" + id;
-    document.getElementById("roomLink").innerText = link;
-    document.getElementById("startUI").style.display = "none";
-    document.getElementById("hostUI").style.display = "block";
-    document.getElementById("takeBtn").style.display = "inline-block";
+  peer.on("open", id=>{
+    players[myID]={id:myID,name:myName};
+    document.getElementById("roomDisplay").innerText =
+      "Room Link: "+location.origin+location.pathname+"?room="+id;
+    document.getElementById("startUI").style.display="none";
+    document.getElementById("gameUI").style.display="block";
+    updatePlayerList();
   });
 
-  peer.on('connection', conn => {
-    connections.push(conn);
-
-    conn.on('data', data => {
-      if (data.type === "photo") {
-        broadcastPhoto(data.image);
-      }
-    });
+  peer.on("connection", conn=>{
+    setupConnection(conn);
   });
 }
 
-function joinLobby(roomID) {
+function joinLobby(){
+  myName = document.getElementById("nicknameJoin").value || "Player";
+  const room = new URLSearchParams(location.search).get("room");
   peer = new Peer();
-
-  peer.on('open', id => {
-    hostConnection = peer.connect(roomID);
-
-    hostConnection.on('open', () => {
-      document.getElementById("startUI").style.display = "none";
-      document.getElementById("playerUI").style.display = "block";
-      document.getElementById("takeBtn").style.display = "inline-block";
-    });
-
-    hostConnection.on('data', data => {
-      if (data.type === "photo") {
-        displayPhoto(data.image);
-      }
-    });
+  peer.on("open", id=>{
+    myID=id;
+    const conn = peer.connect(room);
+    setupConnection(conn,true);
   });
 }
 
-function broadcastPhoto(image) {
-  displayPhoto(image);
+function setupConnection(conn,isJoining=false){
+  conn.on("open", ()=>{
+    connections[conn.peer]=conn;
 
-  connections.forEach(conn => {
-    conn.send({ type: "photo", image: image });
+    if(isJoining){
+      conn.send({type:"intro",id:myID,name:myName});
+      hostID=conn.peer;
+      document.getElementById("joinUI").style.display="none";
+      document.getElementById("gameUI").style.display="block";
+    }
+
+    systemMessage("Connected: "+conn.peer);
+  });
+
+  conn.on("data", data=>{
+    if(data.type==="intro"){
+      players[data.id]={id:data.id,name:data.name};
+      updatePlayerList();
+      broadcast("playerUpdate",{players});
+    }
+
+    if(data.type==="playerUpdate"){
+      players=data.players;
+      updatePlayerList();
+    }
+
+    if(data.type==="photo"){
+      displayPhoto(data.image,data.name);
+    }
+
+    if(data.type==="newHost"){
+      hostID=data.id;
+      isHost=(myID===hostID);
+      updatePlayerList();
+      systemMessage("New host: "+players[hostID]?.name);
+    }
+  });
+
+  conn.on("close", ()=>{
+    delete connections[conn.peer];
+    delete players[conn.peer];
+    updatePlayerList();
+    systemMessage("Disconnected: "+conn.peer);
+
+    if(conn.peer===hostID){
+      electNewHost();
+    }
   });
 }
 
-function displayPhoto(image) {
-  const img = document.createElement("img");
-  img.src = image;
-  document.getElementById("feed").prepend(img);
+function electNewHost(){
+  const ids=Object.keys(players).sort();
+  if(ids.length===0) return;
+  hostID=ids[0];
+  broadcast("newHost",{id:hostID});
+  isHost=(myID===hostID);
 }
 
-function openCamera() {
-  navigator.mediaDevices.getUserMedia({ video: true }).then(s => {
-    stream = s;
-    document.getElementById("video").srcObject = stream;
-    document.getElementById("cameraUI").style.display = "block";
+function openCamera(){
+  navigator.mediaDevices.getUserMedia({video:true}).then(s=>{
+    stream=s;
+    document.getElementById("video").srcObject=s;
+    document.getElementById("cameraUI").style.display="block";
   });
 }
 
-function capture() {
-  const video = document.getElementById("video");
-  const canvas = document.getElementById("canvas");
-  canvas.width = video.videoWidth;
-  canvas.height = video.videoHeight;
-  canvas.getContext("2d").drawImage(video, 0, 0);
-  canvas.style.display = "block";
-  document.getElementById("submitBtn").style.display = "inline-block";
+function capture(){
+  const video=document.getElementById("video");
+  const canvas=document.getElementById("canvas");
+  canvas.width=video.videoWidth;
+  canvas.height=video.videoHeight;
+  canvas.getContext("2d").drawImage(video,0,0);
+  canvas.style.display="block";
+  document.getElementById("submitBtn").style.display="inline-block";
 }
 
-function submitPhoto() {
-  const canvas = document.getElementById("canvas");
-  const image = canvas.toDataURL("image/jpeg", 0.7);
-
-  if (isHost) {
-    broadcastPhoto(image);
-  } else {
-    hostConnection.send({ type: "photo", image: image });
-  }
-
-  stream.getTracks().forEach(t => t.stop());
-  document.getElementById("cameraUI").style.display = "none";
+function submitPhoto(){
+  const canvas=document.getElementById("canvas");
+  const image=canvas.toDataURL("image/jpeg",0.6);
+  displayPhoto(image,myName);
+  broadcast("photo",{image,name:myName});
+  stream.getTracks().forEach(t=>t.stop());
+  document.getElementById("cameraUI").style.display="none";
 }
 
-const params = new URLSearchParams(window.location.search);
-const room = params.get("room");
-if (room) {
-  joinLobby(room);
+function displayPhoto(image,name){
+  const img=document.createElement("img");
+  img.src=image;
+  const wrapper=document.createElement("div");
+  wrapper.innerHTML="<b>"+name+"</b><br>";
+  wrapper.appendChild(img);
+  document.getElementById("feed").prepend(wrapper);
+}
+
+const roomParam=new URLSearchParams(location.search).get("room");
+if(roomParam){
+  document.getElementById("startUI").style.display="none";
+  document.getElementById("joinUI").style.display="block";
 }
 </script>
-
 </body>
 </html>
