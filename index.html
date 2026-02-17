@@ -2,7 +2,7 @@
 <html>
 <head>
 <meta charset="UTF-8">
-<title>P2P Lobby</title>
+<title>P2P Turn Test</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
 
@@ -37,17 +37,17 @@ video, canvas, img {
 #gameUI { display:none; }
 #players { margin-top:15px; }
 .system { color:#aaa; font-size:14px; }
-.hostBadge { color:#4CAF50; font-size:12px; }
+.activeTurn { color:#4CAF50; font-weight:bold; }
 </style>
 </head>
 <body>
 
-<h1>P2P Photo Lobby</h1>
+<h1>P2P Turn Test</h1>
 
 <div id="startUI">
   <input id="nicknameInput" placeholder="Enter nickname" />
   <br>
-  <button onclick="createLobby()">Create Lobby</button>
+  <button onclick="createLobby()">Create Lobby (Host)</button>
 </div>
 
 <div id="joinUI" style="display:none;">
@@ -59,7 +59,8 @@ video, canvas, img {
 <div id="gameUI">
   <h3 id="roomDisplay"></h3>
   <div id="players"></div>
-  <button onclick="openCamera()">Take Action</button>
+  <h4 id="turnDisplay"></h4>
+  <div id="actionButtons"></div>
   <h2>Feed</h2>
   <div id="feed"></div>
 </div>
@@ -72,134 +73,175 @@ video, canvas, img {
 </div>
 
 <script>
-let peer;
-let myID;
-let myName;
-let isHost = false;
-let hostID = null;
-let connections = {};
-let players = {};
+/************ P2P & Lobby Setup ************/
+let peer, myID, myName;
+let isHost=false;
+let hostID=null;
+let connections={};
+let players={};
+let turnOrder=[];
+let currentTurnIndex=0;
 let stream;
+let pendingAction=null;
+let actionWaitingReject=false;
 
-function randomID(){
-  return Math.random().toString(36).substring(2,8).toUpperCase();
-}
+// Placeholder actions
+const ACTIONS = {
+  1: { name: "Action 1", requiresPhoto:false, counterable:false },
+  2: { name: "Action 2", requiresPhoto:true, counterable:true, counterTarget:"any" },
+  3: { name: "Action 3", requiresPhoto:true, counterable:true, counterTarget:"recipient" },
+  4: { name: "Action 4", requiresPhoto:false, counterable:true, counterTarget:"any" },
+  5: { name: "Action 5", requiresPhoto:false, counterable:false },
+  6: { name: "Action 6", requiresPhoto:true, counterable:false },
+  7: { name: "Action 7", requiresPhoto:false, counterable:true, counterTarget:"recipient" },
+  8: { name: "Action 8", requiresPhoto:true, counterable:true, counterTarget:"any" }
+};
 
+function randomID(){ return Math.random().toString(36).substring(2,8).toUpperCase(); }
 function systemMessage(msg){
-  const div = document.createElement("div");
+  const div=document.createElement("div");
   div.className="system";
   div.innerText=msg;
   document.getElementById("feed").prepend(div);
 }
-
 function updatePlayerList(){
-  const div = document.getElementById("players");
+  const div=document.getElementById("players");
   div.innerHTML="<h4>Players:</h4>";
   Object.values(players).forEach(p=>{
     const el=document.createElement("div");
-    el.innerHTML = p.name + (p.id===hostID ? " <span class='hostBadge'>(Host)</span>" : "");
+    el.innerHTML = p.name + (p.id===hostID ? " <span>(Host)</span>":"") + 
+                   (turnOrder[currentTurnIndex]===p.id ? " <span class='activeTurn'>(Turn)</span>":"");
     div.appendChild(el);
   });
 }
 
 function broadcast(type,data){
-  Object.values(connections).forEach(conn=>{
-    conn.send({type,...data});
-  });
+  Object.values(connections).forEach(conn=>{ conn.send({type,...data}); });
 }
 
+/************ Lobby Creation ************/
 function createLobby(){
-  myName = document.getElementById("nicknameInput").value || "Host";
-  const roomID = randomID();
+  myName=document.getElementById("nicknameInput").value || "Host";
+  const roomID=randomID();
   isHost=true;
   hostID=roomID;
-
-  peer = new Peer(roomID);
+  peer=new Peer(roomID);
   myID=roomID;
-
-  peer.on("open", id=>{
+  peer.on("open",id=>{
     players[myID]={id:myID,name:myName};
-    document.getElementById("roomDisplay").innerText =
-      "Room Link: "+location.origin+location.pathname+"?room="+id;
+    turnOrder=[myID];
+    document.getElementById("roomDisplay").innerText="Room Link: "+location.origin+location.pathname+"?room="+id;
     document.getElementById("startUI").style.display="none";
     document.getElementById("gameUI").style.display="block";
     updatePlayerList();
+    renderActionButtons();
   });
-
-  peer.on("connection", conn=>{
-    setupConnection(conn);
-  });
+  peer.on("connection",conn=>{ setupConnection(conn); });
 }
 
 function joinLobby(){
-  myName = document.getElementById("nicknameJoin").value || "Player";
-  const room = new URLSearchParams(location.search).get("room");
-  peer = new Peer();
-  peer.on("open", id=>{
+  myName=document.getElementById("nicknameJoin").value || "Player";
+  const room=new URLSearchParams(location.search).get("room");
+  peer=new Peer();
+  peer.on("open",id=>{
     myID=id;
-    const conn = peer.connect(room);
+    const conn=peer.connect(room);
     setupConnection(conn,true);
   });
 }
 
+/************ P2P Connection Handling ************/
 function setupConnection(conn,isJoining=false){
-  conn.on("open", ()=>{
+  conn.on("open",()=>{
     connections[conn.peer]=conn;
-
     if(isJoining){
       conn.send({type:"intro",id:myID,name:myName});
       hostID=conn.peer;
       document.getElementById("joinUI").style.display="none";
       document.getElementById("gameUI").style.display="block";
     }
-
     systemMessage("Connected: "+conn.peer);
   });
-
-  conn.on("data", data=>{
+  conn.on("data",data=>{
     if(data.type==="intro"){
       players[data.id]={id:data.id,name:data.name};
+      turnOrder.push(data.id);
       updatePlayerList();
-      broadcast("playerUpdate",{players});
+      broadcast("playerUpdate",{players,turnOrder});
     }
-
     if(data.type==="playerUpdate"){
       players=data.players;
+      turnOrder=data.turnOrder;
       updatePlayerList();
     }
-
-    if(data.type==="photo"){
-      displayPhoto(data.image,data.name);
+    if(data.type==="action"){
+      handleIncomingAction(data);
     }
-
+    if(data.type==="photo"){
+      displayPhoto(data.image,data.name,true);
+    }
+    if(data.type==="reject"){
+      handleReject(data.playerID);
+    }
     if(data.type==="newHost"){
       hostID=data.id;
       isHost=(myID===hostID);
       updatePlayerList();
-      systemMessage("New host: "+players[hostID]?.name);
+      systemMessage("New host: "+players[hostID].name);
     }
   });
-
-  conn.on("close", ()=>{
+  conn.on("close",()=>{
     delete connections[conn.peer];
     delete players[conn.peer];
+    turnOrder=turnOrder.filter(id=>id!==conn.peer);
     updatePlayerList();
     systemMessage("Disconnected: "+conn.peer);
-
-    if(conn.peer===hostID){
-      electNewHost();
-    }
+    if(conn.peer===hostID) electNewHost();
   });
 }
 
 function electNewHost(){
-  const ids=Object.keys(players).sort();
-  if(ids.length===0) return;
-  hostID=ids[0];
+  if(turnOrder.length===0) return;
+  hostID=turnOrder[0];
   broadcast("newHost",{id:hostID});
   isHost=(myID===hostID);
 }
 
+/************ Turn & Actions ************/
+function nextTurn(){
+  currentTurnIndex=(currentTurnIndex+1)%turnOrder.length;
+  pendingAction=null;
+  actionWaitingReject=false;
+  updatePlayerList();
+}
+
+function renderActionButtons(){
+  const container=document.getElementById("actionButtons");
+  container.innerHTML="";
+  if(turnOrder[currentTurnIndex]!==myID) return;
+  Object.entries(ACTIONS).forEach(([key,action])=>{
+    const btn=document.createElement("button");
+    btn.innerText=key+": "+action.name;
+    btn.onclick=()=>selectAction(key);
+    container.appendChild(btn);
+  });
+}
+
+function selectAction(actionKey){
+  const action=ACTIONS[actionKey];
+  pendingAction={key:actionKey,action:action,playerID:myID};
+  systemMessage("Selected action: "+action.name);
+  if(action.requiresPhoto){
+    openCamera();
+  } else {
+    broadcast("action",{...pendingAction});
+    handleIncomingAction(pendingAction);
+    nextTurn();
+    renderActionButtons();
+  }
+}
+
+/************ Photo Handling ************/
 function openCamera(){
   navigator.mediaDevices.getUserMedia({video:true}).then(s=>{
     stream=s;
@@ -221,21 +263,43 @@ function capture(){
 function submitPhoto(){
   const canvas=document.getElementById("canvas");
   const image=canvas.toDataURL("image/jpeg",0.6);
-  displayPhoto(image,myName);
+  displayPhoto(image,myName,true);
   broadcast("photo",{image,name:myName});
   stream.getTracks().forEach(t=>t.stop());
-  document.getElementById("cameraUI").style.display="none";
+  document.getElementById("cameraUI").style.display="none");
+  actionWaitingReject=true;
 }
 
-function displayPhoto(image,name){
+/************ Action Resolution ************/
+function displayPhoto(image,name,allowReject){
+  const div=document.createElement("div");
+  div.innerHTML="<b>"+name+"</b><br>";
   const img=document.createElement("img");
   img.src=image;
-  const wrapper=document.createElement("div");
-  wrapper.innerHTML="<b>"+name+"</b><br>";
-  wrapper.appendChild(img);
-  document.getElementById("feed").prepend(wrapper);
+  div.appendChild(img);
+  if(allowReject && myID!==pendingAction?.playerID){
+    const rejectBtn=document.createElement("button");
+    rejectBtn.innerText="Reject";
+    rejectBtn.onclick=()=>{ broadcast("reject",{playerID:myID}); handleReject({playerID:myID}); };
+    div.appendChild(rejectBtn);
+  }
+  document.getElementById("feed").prepend(div);
 }
 
+function handleIncomingAction(data){
+  systemMessage(players[data.playerID].name+" played action "+ACTIONS[data.key].name);
+  pendingAction=data;
+}
+
+function handleReject(data){
+  if(!actionWaitingReject) return;
+  actionWaitingReject=false;
+  systemMessage(players[data.playerID].name+" rejected the action!");
+  nextTurn();
+  renderActionButtons();
+}
+
+/************ Init Join ************/
 const roomParam=new URLSearchParams(location.search).get("room");
 if(roomParam){
   document.getElementById("startUI").style.display="none";
