@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Host Hub Lobby</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+
+<style>
+body {
+  background: #111;
+  color: white;
+  text-align: center;
+  font-family: Arial;
+  padding: 20px;
+}
+button {
+  padding: 10px 20px;
+  margin: 10px;
+  font-size: 16px;
+  border-radius: 6px;
+  border: none;
+  cursor: pointer;
+}
+video, canvas, img {
+  max-width: 90%;
+  margin-top: 15px;
+  border-radius: 10px;
+}
+#cameraUI { display: none; }
+#roomLink { word-break: break-all; }
+</style>
+</head>
+<body>
+
+<h1>WebRTC Lobby</h1>
+
+<div id="startUI">
+  <button onclick="createLobby()">Create Lobby (Host)</button>
+</div>
+
+<div id="hostUI" style="display:none;">
+  <h3>Share This Link:</h3>
+  <p id="roomLink"></p>
+</div>
+
+<div id="playerUI" style="display:none;">
+  <h3>Connected to Host</h3>
+</div>
+
+<button id="takeBtn" onclick="openCamera()" style="display:none;">Take Action</button>
+
+<div id="cameraUI">
+  <video id="video" autoplay playsinline></video><br>
+  <button onclick="capture()">Capture</button>
+  <button onclick="submitPhoto()" id="submitBtn" style="display:none;">Submit</button>
+  <canvas id="canvas" style="display:none;"></canvas>
+</div>
+
+<h2>Lobby Feed</h2>
+<div id="feed"></div>
+
+<script>
+let peer;
+let connections = [];
+let isHost = false;
+let hostConnection = null;
+let stream;
+
+function randomID() {
+  return Math.random().toString(36).substring(2,8).toUpperCase();
+}
+
+function createLobby() {
+  isHost = true;
+  const roomID = randomID();
+  peer = new Peer(roomID);
+
+  peer.on('open', id => {
+    const link = location.origin + location.pathname + "?room=" + id;
+    document.getElementById("roomLink").innerText = link;
+    document.getElementById("startUI").style.display = "none";
+    document.getElementById("hostUI").style.display = "block";
+    document.getElementById("takeBtn").style.display = "inline-block";
+  });
+
+  peer.on('connection', conn => {
+    connections.push(conn);
+
+    conn.on('data', data => {
+      if (data.type === "photo") {
+        broadcastPhoto(data.image);
+      }
+    });
+  });
+}
+
+function joinLobby(roomID) {
+  peer = new Peer();
+
+  peer.on('open', id => {
+    hostConnection = peer.connect(roomID);
+
+    hostConnection.on('open', () => {
+      document.getElementById("startUI").style.display = "none";
+      document.getElementById("playerUI").style.display = "block";
+      document.getElementById("takeBtn").style.display = "inline-block";
+    });
+
+    hostConnection.on('data', data => {
+      if (data.type === "photo") {
+        displayPhoto(data.image);
+      }
+    });
+  });
+}
+
+function broadcastPhoto(image) {
+  displayPhoto(image);
+
+  connections.forEach(conn => {
+    conn.send({ type: "photo", image: image });
+  });
+}
+
+function displayPhoto(image) {
+  const img = document.createElement("img");
+  img.src = image;
+  document.getElementById("feed").prepend(img);
+}
+
+function openCamera() {
+  navigator.mediaDevices.getUserMedia({ video: true }).then(s => {
+    stream = s;
+    document.getElementById("video").srcObject = stream;
+    document.getElementById("cameraUI").style.display = "block";
+  });
+}
+
+function capture() {
+  const video = document.getElementById("video");
+  const canvas = document.getElementById("canvas");
+  canvas.width = video.videoWidth;
+  canvas.height = video.videoHeight;
+  canvas.getContext("2d").drawImage(video, 0, 0);
+  canvas.style.display = "block";
+  document.getElementById("submitBtn").style.display = "inline-block";
+}
+
+function submitPhoto() {
+  const canvas = document.getElementById("canvas");
+  const image = canvas.toDataURL("image/jpeg", 0.7);
+
+  if (isHost) {
+    broadcastPhoto(image);
+  } else {
+    hostConnection.send({ type: "photo", image: image });
+  }
+
+  stream.getTracks().forEach(t => t.stop());
+  document.getElementById("cameraUI").style.display = "none";
+}
+
+const params = new URLSearchParams(window.location.search);
+const room = params.get("room");
+if (room) {
+  joinLobby(room);
+}
+</script>
+
+</body>
+</html>
