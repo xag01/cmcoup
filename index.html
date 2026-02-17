@@ -2,7 +2,7 @@
 <html>
 <head>
 <meta charset="UTF-8">
-<title>P2P Turn Test</title>
+<title>P2P Turn Test Fixed</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
 
@@ -42,7 +42,7 @@ video, canvas, img {
 </head>
 <body>
 
-<h1>P2P Turn Test</h1>
+<h1>P2P Turn Test Fixed</h1>
 
 <div id="startUI">
   <input id="nicknameInput" placeholder="Enter nickname" />
@@ -84,6 +84,7 @@ let currentTurnIndex=0;
 let stream;
 let pendingAction=null;
 let actionWaitingReject=false;
+let autoAcceptTimer=null;
 
 // Placeholder actions
 const ACTIONS = {
@@ -167,13 +168,15 @@ function setupConnection(conn,isJoining=false){
   conn.on("data",data=>{
     if(data.type==="intro"){
       players[data.id]={id:data.id,name:data.name};
-      turnOrder.push(data.id);
+      if(!turnOrder.includes(data.id)) turnOrder.push(data.id);
+      turnOrder = [...new Set(turnOrder)];
       updatePlayerList();
       broadcast("playerUpdate",{players,turnOrder});
     }
     if(data.type==="playerUpdate"){
       players=data.players;
       turnOrder=data.turnOrder;
+      turnOrder = [...new Set(turnOrder)];
       updatePlayerList();
     }
     if(data.type==="action"){
@@ -184,6 +187,9 @@ function setupConnection(conn,isJoining=false){
     }
     if(data.type==="reject"){
       handleReject(data.playerID);
+    }
+    if(data.type==="accept"){
+      handleAccept(data.playerID);
     }
     if(data.type==="newHost"){
       hostID=data.id;
@@ -214,6 +220,7 @@ function nextTurn(){
   currentTurnIndex=(currentTurnIndex+1)%turnOrder.length;
   pendingAction=null;
   actionWaitingReject=false;
+  if(autoAcceptTimer) { clearTimeout(autoAcceptTimer); autoAcceptTimer=null; }
   updatePlayerList();
   renderActionButtons();
 }
@@ -239,7 +246,9 @@ function selectAction(actionKey){
   } else {
     broadcast("action",{...pendingAction});
     handleIncomingAction(pendingAction);
-    nextTurn();
+    if(!action.counterable){
+      nextTurn();
+    }
   }
 }
 
@@ -270,6 +279,11 @@ function submitPhoto(){
   stream.getTracks().forEach(t=>t.stop());
   document.getElementById("cameraUI").style.display="none";
   actionWaitingReject=true;
+
+  // Auto-accept after 10s if nobody rejects
+  autoAcceptTimer = setTimeout(()=>{
+    handleAccept(myID);
+  },10000);
 }
 
 /************ Action Resolution ************/
@@ -282,8 +296,23 @@ function displayPhoto(image,name,allowReject){
   if(allowReject && myID!==pendingAction?.playerID){
     const rejectBtn=document.createElement("button");
     rejectBtn.innerText="Reject";
-    rejectBtn.onclick=()=>{ broadcast("reject",{playerID:myID}); handleReject({playerID:myID}); };
+    rejectBtn.onclick=()=>{
+      if(actionWaitingReject){
+        broadcast("reject",{playerID:myID});
+        handleReject({playerID:myID});
+      }
+    };
     div.appendChild(rejectBtn);
+
+    const acceptBtn=document.createElement("button");
+    acceptBtn.innerText="Accept";
+    acceptBtn.onclick=()=>{
+      if(actionWaitingReject){
+        broadcast("accept",{playerID:myID});
+        handleAccept({playerID:myID});
+      }
+    };
+    div.appendChild(acceptBtn);
   }
   document.getElementById("feed").prepend(div);
 }
@@ -296,7 +325,16 @@ function handleIncomingAction(data){
 function handleReject(data){
   if(!actionWaitingReject) return;
   actionWaitingReject=false;
+  if(autoAcceptTimer){ clearTimeout(autoAcceptTimer); autoAcceptTimer=null; }
   systemMessage(players[data.playerID].name+" rejected the action!");
+  nextTurn();
+}
+
+function handleAccept(data){
+  if(!actionWaitingReject) return;
+  actionWaitingReject=false;
+  if(autoAcceptTimer){ clearTimeout(autoAcceptTimer); autoAcceptTimer=null; }
+  systemMessage(players[data.playerID].name+" accepted the action!");
   nextTurn();
 }
 
